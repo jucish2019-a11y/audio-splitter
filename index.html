@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Audio Splitter</title>
-  <meta name="description" content="Cut, split and trim audio files in your browser. Nothing is uploaded.">
+  <meta name="description" content="Cut, split and trim audio from audio or video files in your browser. Nothing is uploaded.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232d4fd8'/%3E%3Cpath d='M6 16h2M10 11v10M14 7v18M18 12v8M22 9v14M26 15v2' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -14,41 +14,74 @@
 <div class="wrap">
   <header>
     <h1>Audio Splitter</h1>
-    <p class="tag">Cut, split and trim audio in your browser. Your files never leave your device.</p>
+    <p class="tag">Cut, split and trim audio from audio or video files. Your files never leave your device.</p>
   </header>
 
   <section class="panel file" aria-label="Audio file">
     <div class="file-info">
       <div class="file-name" id="fileName">No file open</div>
-      <div class="file-meta" id="fileMeta">Open a file or drop one anywhere on the page. MP3, WAV, M4A, OGG and FLAC work in most browsers.</div>
+      <div class="file-meta" id="fileMeta">Open an audio or video file, or drop one anywhere on the page. MP3, WAV, M4A, AAC, OGG, FLAC, MP4, MOV, MKV and WebM all work.</div>
+      <div class="loading" id="loading" hidden>
+        <progress id="loadProg" max="1"></progress>
+        <span id="loadText" role="status"></span>
+      </div>
     </div>
     <div class="row">
       <button id="sampleBtn" type="button">Try an example</button>
-      <label class="btn primary" for="fileInput">Open audio file…<input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.webm"></label>
+      <label class="btn primary" for="fileInput">Open file…<input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.wma,.aif,.aiff,.mp4,.m4v,.mov,.mkv,.webm,.avi,.3gp"></label>
     </div>
   </section>
 
   <section class="panel deck" id="deck" aria-label="Waveform">
     <canvas class="ruler" id="ruler" aria-hidden="true"></canvas>
-    <canvas id="wave" role="img" aria-label="Waveform. Click to place the playhead, double-click to add a split, drag a split to move it."></canvas>
-    <div class="empty" id="empty">Open an audio file to see its waveform.</div>
-    <div class="drop-hint" id="dropHint" hidden>Drop audio to open it</div>
+    <canvas id="wave" role="img" aria-label="Waveform. Drag to select a range, click to move the playhead, double-click to split."></canvas>
+    <input type="range" id="scroll" class="scroll" min="0" max="1000" value="0" step="1" aria-label="Scroll the waveform" hidden>
+    <div class="empty" id="empty">Open a file to see its waveform.</div>
+    <div class="drop-hint" id="dropHint" hidden>Drop the file to open it</div>
+  </section>
+  <p class="deck-hint" id="deckHint">Drag across the waveform to select what to cut or keep. Click to move the playhead. Double-click to split. <kbd>Ctrl</kbd> + scroll, or pinch, to zoom.</p>
+
+  <section class="panel selbar" id="selBar" aria-label="Selection" hidden>
+    <div class="row sel-times">
+      <span class="label">Selection</span>
+      <input type="text" id="selStart" class="tc" aria-label="Selection start" size="11" autocomplete="off" spellcheck="false">
+      <span aria-hidden="true">→</span>
+      <input type="text" id="selEnd" class="tc" aria-label="Selection end" size="11" autocomplete="off" spellcheck="false">
+      <span class="tc muted" id="selLen"></span>
+    </div>
+    <div class="row">
+      <button type="button" id="selPlay">▶ Play</button>
+      <button type="button" class="danger" id="selRemove" aria-keyshortcuts="Delete">Remove</button>
+      <button type="button" id="selKeep">Keep only this</button>
+      <button type="button" id="selPart">Make it a part</button>
+      <button type="button" class="ghost" id="selClear" aria-keyshortcuts="Escape">Clear</button>
+    </div>
   </section>
 
-  <section class="panel toolbar" aria-label="Playback and splitting">
+  <section class="panel toolbar" aria-label="Playback and editing">
     <div class="row">
       <button class="primary" id="playBtn" type="button" disabled aria-keyshortcuts="Space">▶ Play</button>
       <span class="tc" id="clock">0:00.000</span>
     </div>
     <div class="row">
+      <button id="undoBtn" type="button" disabled title="Undo (Ctrl+Z)" aria-keyshortcuts="Control+Z">↶ Undo</button>
+      <button id="redoBtn" type="button" disabled title="Redo (Ctrl+Shift+Z)" aria-keyshortcuts="Control+Shift+Z">↷ Redo</button>
+    </div>
+    <div class="row">
       <button id="splitBtn" type="button" disabled aria-keyshortcuts="S">Split at playhead</button>
-      <button id="clearBtn" type="button" disabled>Remove all splits</button>
+      <button id="clearBtn" type="button" disabled>Reset edits</button>
+    </div>
+    <div class="row" role="group" aria-label="Zoom">
+      <button id="zoomOut" type="button" disabled aria-label="Zoom out" title="Zoom out (−)">−</button>
+      <button id="zoomFit" type="button" disabled title="Show the whole file (0)">Fit</button>
+      <button id="zoomIn" type="button" disabled aria-label="Zoom in" title="Zoom in (+)">+</button>
     </div>
     <details class="auto" id="autoBox">
       <summary>Split on silence</summary>
       <div class="auto-body">
         <label class="field"><span>Quieter than</span><span class="unit"><input type="number" id="silDb" value="-40" min="-80" max="-10" step="1"> dB</span></label>
         <label class="field"><span>For at least</span><span class="unit"><input type="number" id="silLen" value="1.0" min="0.1" max="30" step="0.1"> s</span></label>
+        <label class="check"><input type="checkbox" id="silCut"> Also remove the silent gaps</label>
         <button id="autoBtn" type="button" disabled>Find splits</button>
       </div>
     </details>
@@ -57,7 +90,7 @@
   <section class="panel parts" aria-label="Parts">
     <div class="parts-head">
       <div class="label">Parts</div>
-      <div class="hint">Untick a part to cut it out.</div>
+      <div class="hint" id="summary">Untick a part to cut it out.</div>
     </div>
     <div class="table-scroll">
       <table>
@@ -71,8 +104,8 @@
     <div class="export-grid">
       <fieldset class="group">
         <legend class="label">Output</legend>
-        <label class="check"><input type="radio" name="mode" value="separate" checked> Each kept part as its own file</label>
-        <label class="check"><input type="radio" name="mode" value="joined"> Kept parts joined into one file</label>
+        <label class="check"><input type="radio" name="mode" value="joined" checked> One file, with removed parts cut out</label>
+        <label class="check"><input type="radio" name="mode" value="separate"> Each kept part as a separate file</label>
       </fieldset>
       <fieldset class="group">
         <legend class="label">Format</legend>
@@ -90,7 +123,7 @@
         <legend class="label">Fades</legend>
         <label class="field inline"><span>Fade in</span><span class="unit"><input type="number" id="fadeIn" value="0" min="0" max="10000" step="10"> ms</span></label>
         <label class="field inline"><span>Fade out</span><span class="unit"><input type="number" id="fadeOut" value="0" min="0" max="10000" step="10"> ms</span></label>
-        <label class="field inline" id="xfRow"><span>Crossfade joins</span><span class="unit"><input type="number" id="xfade" value="0" min="0" max="5000" step="10"> ms</span></label>
+        <label class="field inline" id="xfRow"><span>Smooth each cut</span><span class="unit"><input type="number" id="xfade" value="20" min="0" max="5000" step="10"> ms</span></label>
       </fieldset>
     </div>
     <div class="export-foot">
@@ -100,13 +133,14 @@
   </section>
 
   <footer>
-    <span><kbd>Space</kbd> play/pause · <kbd>S</kbd> split at playhead · <kbd>←</kbd>/<kbd>→</kbd> move playhead 1 s</span>
-    <span>MP3 encoding by <a href="https://github.com/zhuker/lamejs" rel="noopener">lamejs</a> (LGPL-3.0), based on <a href="https://lame.sourceforge.io/" rel="noopener">LAME</a>.</span>
+    <span><kbd>Space</kbd> play · <kbd>S</kbd> split · <kbd>Del</kbd> remove selection · <kbd>Esc</kbd> clear selection · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>←</kbd>/<kbd>→</kbd> move 1 s · <kbd>+</kbd>/<kbd>−</kbd> zoom</span>
+    <span>MP3 encoding by <a href="https://github.com/zhuker/lamejs" rel="noopener">lamejs</a>. Files your browser can't read are converted with <a href="https://github.com/ffmpegwasm/ffmpeg.wasm" rel="noopener">ffmpeg.wasm</a>.</span>
   </footer>
 </div>
 
 <script src="vendor/lame.min.js"></script>
 <script src="js/encoders.js"></script>
+<script src="js/decode.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
