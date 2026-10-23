@@ -12,7 +12,7 @@
     return;
   }
   const { encodeWav, encodeMp3, zipFiles } = window.AudioEncoders;
-  const { decodeFile } = window.AudioDecode;
+  const { openFile, exportLarge } = window.AudioDecode;
 
   const wave = $('wave'), ruler = $('ruler');
   let ctx = null;               // AudioContext, created on first use
@@ -27,6 +27,7 @@
   let peaks = null, peaksKey = '';
   let raf = 0;
   let busy = false;
+  let large = null;             // large-file mode: { file, media, info }; the original is cut by ffmpeg on export
   let loadToken = 0;
   const undoStack = [], redoStack = [];
 
@@ -108,12 +109,23 @@
     $('fileMeta').textContent = fmtBytes(file.size);
     setControlsEnabled(false);
     try {
-      const { buffer, video, via } = await decodeFile(file, audioCtx(), (t, p) => { if (token === loadToken) showLoading(t, p); });
-      if (token !== loadToken) return;              // another file was opened meanwhile
+      const r = await openFile(file, audioCtx(), (t, p) => { if (token === loadToken) showLoading(t, p); });
+      if (token !== loadToken) { if (r.media) r.media.removeAttribute('src'); return; }   // another file was opened meanwhile
       hideLoading();
+      releaseLarge();
       fileBase = safeName(file.name.replace(/\.[^.]+$/, '')) || 'audio';
-      setBuffer(buffer, `${video ? 'Video' : 'Audio'} · ${fmtBytes(file.size)}${video ? ' · sound extracted' : ''}${via === 'ffmpeg' ? ' (converted)' : ''}`);
-      setStatus('Drag across the waveform to select a range, then Remove it or Keep only it.');
+      const label = `${r.video ? 'Video' : 'Audio'} · ${fmtBytes(file.size)}${r.video ? ' · sound extracted' : ''}`;
+      if (r.kind === 'large') {
+        large = { file, media: r.media, info: r.info };
+        if (r.media) { r.media.muted = false; r.media.addEventListener('ended', () => { if (playing && playing.media) { stop(); draw(); } }); }
+        setBuffer(r.analysis, label + ' · long recording', r.info);
+        setStatus(r.media
+          ? 'Long recording: edits are applied when you download. Drag across the waveform to select a range.'
+          : "Long recording: edits are applied when you download. Your browser can't play this file, so preview is off, but cutting and downloading work.");
+      } else {
+        setBuffer(r.buffer, label + (r.via === 'ffmpeg' ? ' (converted)' : ''));
+        setStatus('Drag across the waveform to select a range, then Remove it or Keep only it.');
+      }
     } catch (e) {
       if (token !== loadToken) return;
       hideLoading();
@@ -122,6 +134,11 @@
       setStatus(e.userMessage || "Couldn't open this file.", 'err');
       if (buf) setControlsEnabled(true); else $('fileName').textContent = file.name + ' (not opened)';
     }
+  }
+
+  function releaseLarge() {
+    if (large && large.media) { large.media.pause(); const u = large.media.src; large.media.removeAttribute('src'); large.media.load(); URL.revokeObjectURL(u); }
+    large = null;
   }
 
   function makeSample() {
@@ -148,15 +165,16 @@
     return b;
   }
 
-  function setBuffer(b, sourceLabel) {
+  function setBuffer(b, sourceLabel, info) {
     buf = b;
     segs = [{ start: 0, end: b.duration, keep: true, name: '' }];
     selected = 0; playhead = 0; range = null;
     view = { start: 0, span: b.duration };
     undoStack.length = 0; redoStack.length = 0;
     peaksKey = '';
-    const ch = b.numberOfChannels === 1 ? 'mono' : b.numberOfChannels === 2 ? 'stereo' : b.numberOfChannels + ' channels';
-    $('fileMeta').textContent = `${sourceLabel} · ${fmt(b.duration)} · ${(b.sampleRate / 1000).toFixed(1)} kHz ${ch}`;
+    const rate = info ? info.sampleRate : b.sampleRate, nch = info ? info.channels : b.numberOfChannels;
+    const ch = nch === 1 ? 'mono' : nch === 2 ? 'stereo' : nch + ' channels';
+    $('fileMeta').textContent = `${sourceLabel} · ${fmt(b.duration)} · ${(rate / 1000).toFixed(1)} kHz ${ch}`;
     $('empty').hidden = true;
     setControlsEnabled(true);
     renderAll();
@@ -567,12 +585,18 @@
     const r = wave.getBoundingClientRect();
     return r.left + ((t - view.start) / view.span) * r.width;
   };
+  // A split can be grabbed only when it stands apart from its neighbours on screen. Where splits
+  // are packed tightly (e.g. after removing silences in a long recording), dragging selects instead;
+  // zoom in to move individual splits.
   function splitNear(clientX, tol) {
     let best = -1, bestD = tol;
     for (let k = 0; k < segs.length - 1; k++) {
       const d = Math.abs(tToPx(segs[k].end) - clientX);
       if (d <= bestD) { best = k; bestD = d; }
     }
+    if (best < 0) return -1;
+    const x = tToPx(segs[best].end), room = 3 * tol;
+    if (tToPx(segs[best].start) > x - room || tToPx(segs[best + 1].end) < x + room) return -1;
     return best;
   }
   function rangeEdgeNear(clientX, tol) {
@@ -583,7 +607,10 @@
   }
   // snap to split markers, file edges and the playhead while dragging a selection
   function snap(t, clientX) {
-    const targets = [0, buf.duration, playhead, ...segs.slice(0, -1).map(s => s.end)];
+    const splits = segs.slice(0, -1).map(s => s.end);
+    const visible = splits.filter(v => v >= view.start && v <= view.start + view.span).length;
+    const dense = visible > 1 && wave.clientWidth / (visible + 1) < 4 * SNAP_PX;
+    const targets = [0, buf.duration, playhead, ...(dense ? [] : splits)];
     for (const v of targets) if (Math.abs(tToPx(v) - clientX) <= SNAP_PX) return v;
     return t;
   }
@@ -667,6 +694,7 @@
       if (next < 0) { setStatus('Nothing left to play after this point.'); return; }
       from = Math.max(from, segs[next].start);
     }
+    if (large) { playMedia(from, until, single); return; }
     const src = ac.createBufferSource();
     src.buffer = buf; src.connect(ac.destination);
     const t0 = ac.currentTime + 0.03;
@@ -676,14 +704,27 @@
     setPlayBtn();
     tick();
   }
+  // large-file mode: play the original file through a media element
+  function playMedia(from, until, single) {
+    const el = large.media;
+    if (!el) { setStatus("Your browser can't play this file, so preview is off. Cutting and downloading still work.", 'err'); return; }
+    el.currentTime = from;
+    const p = el.play();
+    if (p && p.catch) p.catch(() => { if (playing && playing.el === el) { stop(); setStatus("Couldn't start playback. Click Play again.", 'err'); } });
+    playing = { el, media: true, from, until, single };
+    setPlayBtn();
+    tick();
+  }
   function stop() {
+    if (playing && playing.media) { const el = playing.el; playing = null; el.pause(); }
     if (playing) { const s = playing.src; playing = null; try { s.stop(); } catch (_) {} }
     cancelAnimationFrame(raf);
     setPlayBtn();
   }
   function tick() {
     if (!playing) return;
-    playhead = Math.min(playing.until, playing.from + Math.max(0, ctx.currentTime - playing.t0));
+    playhead = playing.media ? playing.el.currentTime : Math.min(playing.until, playing.from + Math.max(0, ctx.currentTime - playing.t0));
+    if (playing.media && playhead >= playing.until - 0.01) { stop(); draw(); updateClock(); return; }
     if (!playing.single) {                              // preview the result: jump over removed parts
       const i = segAt(playhead);
       if (!segs[i].keep) {
@@ -769,12 +810,53 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   }
 
+  async function exportLargeParts(indices, mode, ext, fadeIn, fadeOut) {
+    const joined = mode === 'joined';
+    const runs = joined ? keptRuns() : indices.map(i => ({ start: segs[i].start, end: segs[i].end }));
+    const seconds = runs.reduce((a, r) => a + r.end - r.start, 0);
+    if (ext === 'wav' && seconds * large.info.sampleRate * large.info.channels * 2 > 1.5 * 1024 ** 3) {
+      throw new Error(`a WAV of ${fmt(seconds).replace(/\.\d+$/, '')} would be over 1.5 GB, more than a browser can create. Choose MP3, or export separate parts.`);
+    }
+    const blobs = await exportLarge({
+      file: large.file, runs, joined, format: ext, kbps: +$('kbps').value,
+      fadeIn, fadeOut, xfade: Math.max(0, +$('xfade').value || 0) / 1000,
+      onStage: (t, p) => setStatus(p == null ? t : `${t} ${Math.round(p * 100)}%`),
+    });
+    if (joined) {
+      const name = `${fileBase}-edited.${ext}`;
+      saveBlob(blobs[0], name);
+      setStatus(`Saved ${name} (${fmtBytes(blobs[0].size)}, about ${fmt(seconds).replace(/\.\d+$/, '')}).`, 'ok');
+      return;
+    }
+    const files = blobs.map((blob, k) => ({ name: `${safeName(partName(indices[k]))}.${ext}`, blob }));
+    await saveFiles(files);
+  }
+
+  async function saveFiles(files) {
+    const seen = new Map();                          // avoid duplicate names inside the zip
+    for (const f of files) {
+      const n = seen.get(f.name) || 0; seen.set(f.name, n + 1);
+      if (n) f.name = f.name.replace(/(\.\w+)$/, `-${n + 1}$1`);
+    }
+    if (files.length === 1) {
+      saveBlob(files[0].blob, files[0].name);
+      setStatus(`Saved ${files[0].name} (${fmtBytes(files[0].blob.size)}).`, 'ok');
+    } else {
+      setStatus('Packing zip…');
+      const zip = await zipFiles(files);
+      saveBlob(zip, `${fileBase}-parts.zip`);
+      setStatus(`Saved ${files.length} files in ${fileBase}-parts.zip (${fmtBytes(zip.size)}).`, 'ok');
+    }
+  }
+
   async function exportParts(indices, mode) {
     if (!buf || busy || !indices.length) return;
     busy = true; updateExportLabel(); stop();
     const ext = exportFmt(), fadeIn = Math.max(0, +$('fadeIn').value || 0) / 1000, fadeOut = Math.max(0, +$('fadeOut').value || 0) / 1000;
     try {
-      if (mode === 'joined') {
+      if (large) {
+        await exportLargeParts(indices, mode, ext, fadeIn, fadeOut);
+      } else if (mode === 'joined') {
         setStatus('Joining…');
         await new Promise(r => setTimeout(r, 0));
         const ch = renderJoined(keptRuns(), Math.max(0, +$('xfade').value || 0) / 1000, fadeIn, fadeOut);
@@ -792,24 +874,13 @@
             p => setStatus(`Encoding part ${i + 1} (${k + 1} of ${indices.length})… ${Math.round(p * 100)}%`));
           files.push({ name: `${safeName(partName(i))}.${ext}`, blob });
         }
-        const seen = new Map();                          // avoid duplicate names inside the zip
-        for (const f of files) {
-          const n = seen.get(f.name) || 0; seen.set(f.name, n + 1);
-          if (n) f.name = f.name.replace(/(\.\w+)$/, `-${n + 1}$1`);
-        }
-        if (files.length === 1) {
-          saveBlob(files[0].blob, files[0].name);
-          setStatus(`Saved ${files[0].name} (${fmtBytes(files[0].blob.size)}).`, 'ok');
-        } else {
-          setStatus('Packing zip…');
-          const zip = await zipFiles(files);
-          saveBlob(zip, `${fileBase}-parts.zip`);
-          setStatus(`Saved ${files.length} files in ${fileBase}-parts.zip (${fmtBytes(zip.size)}).`, 'ok');
-        }
+        await saveFiles(files);
       }
     } catch (e) {
       console.error(e);
-      setStatus(/allocation|memory|Array buffer/i.test(String(e && e.message)) ? 'Not enough memory to export this much audio at once. Try exporting parts separately, or choose MP3.' : 'Export failed: ' + (e && e.message ? e.message : e), 'err');
+      setStatus(e && e.userMessage ? e.userMessage
+        : /allocation|memory|Array buffer/i.test(String(e && e.message)) ? 'Not enough memory to export this much audio at once. Try exporting parts separately, or choose MP3.'
+        : 'Export failed: ' + (e && e.message ? e.message : e), 'err');
     } finally {
       busy = false; updateExportLabel();
     }
@@ -819,7 +890,7 @@
   $('fileInput').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) loadFile(f); });
   $('sampleBtn').addEventListener('click', () => {
     if (hasEdits() && !confirm('Open the example? Your edits to the current file will be lost.')) return;
-    stop(); loadToken++; hideLoading();
+    stop(); loadToken++; hideLoading(); releaseLarge();
     fileBase = 'example';
     $('fileName').textContent = 'example.wav (generated tones)';
     setBuffer(makeSample(), 'Audio');

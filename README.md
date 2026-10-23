@@ -10,7 +10,8 @@ It's a static site, so GitHub Pages can host it.
 - Audio: MP3, WAV, M4A/AAC, OGG/Opus, FLAC and anything else your browser can decode
 - Video: MP4, MOV, M4V, MKV, WebM and more. The sound track is extracted and the picture is ignored
 - If the browser can't decode a file itself, it's converted in the browser with [ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm). The converter (about 31 MB) is downloaded from a CDN the first time it's needed, then cached
-- Clear messages for files with no sound track, damaged files, and files over 2 GB
+- **Long recordings** (over 20 minutes, e.g. a 2-hour interview) open in large-file mode: the file is read straight from disk instead of being decoded into memory, previews play through the browser's normal audio player, and the cuts are made by ffmpeg when you download. A 2-hour MP3 needs a few hundred MB of memory instead of about 3 GB
+- Clear messages for files with no sound track and damaged files
 
 **Editing**
 - Drag across the waveform to select a range, then **Remove** it, **Keep only this**, or **Make it a part**. Selection edges snap to splits and the playhead, and you can type exact times
@@ -32,10 +33,10 @@ Keyboard: <kbd>Space</kbd> play/pause · <kbd>S</kbd> split · <kbd>Del</kbd> re
 
 1. Push this folder to a GitHub repository.
 2. In the repository, open **Settings → Pages**.
-3. Under **Build and deployment**, set **Source** to *Deploy from a branch*, choose `main` and `/ (root)`, then **Save**.
-4. After a minute the site is live at `https://<your-user>.github.io/<repo-name>/`.
+3. Under **Build and deployment**, set **Source** to **GitHub Actions**.
+4. Every push to `main` now runs `.github/workflows/pages.yml`, which publishes the site to `https://<your-user>.github.io/<repo-name>/`. Check progress in the **Actions** tab. To publish again without a code change, open the workflow in **Actions** and click **Run workflow**.
 
-There is no build step. The `.nojekyll` file tells Pages to serve the files as they are.
+There is no build step. The page footer shows the version number, so you can tell whether your browser has the latest deploy.
 
 ## Run it locally
 
@@ -62,7 +63,8 @@ Opening `index.html` directly from disk works for files the browser can decode i
 
 ## Limits
 
-- The whole file is decoded into memory. An hour of stereo audio uses about 1.3 GB, so very long recordings may be slow or fail on phones.
+- Files up to 20 minutes are decoded into memory for instant editing. Longer ones use large-file mode, where downloading re-encodes with ffmpeg in the browser and takes a few minutes for multi-hour recordings.
+- In large-file mode a WAV export is limited to about 1.5 GB (roughly 2.5 hours of 44.1 kHz stereo); choose MP3 for longer results.
 - Browsers decode to the audio device's sample rate, so a 44.1 kHz file may export at 48 kHz.
 - MP3 output is at most stereo; files with more channels are mixed down.
 - Only the first sound track of a video is used.
