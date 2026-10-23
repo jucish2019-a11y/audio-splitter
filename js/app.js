@@ -2,6 +2,15 @@
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
+  // A cached old page combined with newer scripts (or a script blocked by an extension) would
+  // otherwise break the app silently, so say what to do instead.
+  if (!window.AudioEncoders || !window.AudioDecode || !window.lamejs || !$('loading')) {
+    const msg = 'Part of the app didn\'t load. Reload the page (Ctrl+Shift+R, or Cmd+Shift+R on a Mac). If that doesn\'t help, turn off ad or script blockers for this site.';
+    const target = $('fileMeta') || document.body;
+    target.textContent = msg;
+    target.style.color = 'var(--err, #b3261e)';
+    return;
+  }
   const { encodeWav, encodeMp3, zipFiles } = window.AudioEncoders;
   const { decodeFile } = window.AudioDecode;
 
